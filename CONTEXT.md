@@ -111,7 +111,7 @@ Compilation flow:
 - `compileWebCSS` runs Lightning CSS with `UniwindCSSVisitor` and returns CSS.
 - `compileNativeCSS` runs `ProcessorBuilder`, serializes variables, scoped variables, and native stylesheet metadata into JS source.
 - `UniwindBundlerConfig.generateArtifacts` writes CSS artifacts and generated theme typings.
-- The CSS artifact is rewritten in place inside the installed package, and Metro transforms it from a worker pool, so `buildCSS` writes through `writeFileAtomicSync`: a unique temporary file next to the target, renamed over it. Readers racing the write see the whole old file or the whole new one, and the rename breaks the package manager's hardlink into its content-addressable store instead of mutating the shared copy.
+- Generated artifacts are rewritten in place and Metro regenerates them from a worker pool, so `buildCSS` and `buildDtsFile` write through `writeFileAtomicSync`: a unique temporary file next to the target, renamed over it. Readers racing the write see the whole old file or the whole new one, the rename breaks the package manager's hardlink into its content-addressable store instead of mutating the shared copy, and a rename a lock refuses is retried before it fails the build.
 - Internal package aliases such as `@/*` are only safe inside `packages/uniwind/src/bundler`. Bundler files are built and transformed to JS, but runtime/component/hook/HOC files are published directly as `.ts`/`.tsx` React Native entrypoints, so aliases in those files are not rewritten.
 
 Metro integration:

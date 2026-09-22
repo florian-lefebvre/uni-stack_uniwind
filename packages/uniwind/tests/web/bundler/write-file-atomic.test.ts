@@ -5,13 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { transformWithOxc } from 'vite'
-import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 import { buildCSS } from '../../../src/bundler/artifacts/css'
 import { EXTRA_UTILITIES_CSS } from '../../../src/bundler/artifacts/css/extraUtilities'
 import { INSETS_CSS } from '../../../src/bundler/artifacts/css/insets'
 import { OVERWRITE_CSS } from '../../../src/bundler/artifacts/css/overwrite'
 import { generateCSSForThemes } from '../../../src/bundler/artifacts/css/themes'
 import { VARIANTS_CSS } from '../../../src/bundler/artifacts/css/variants'
+import { buildDtsFile } from '../../../src/bundler/artifacts/dts'
 import { writeFileAtomicSync } from '../../../src/bundler/artifacts/writeFileAtomic'
 
 const execFileAsync = promisify(execFile)
@@ -143,6 +144,53 @@ describe('writeFileAtomicSync', () => {
         expect(fs.readFileSync(storePath, 'utf-8')).toBe('store content')
         expect(fs.statSync(installedPath).nlink).toBe(1)
     })
+
+    describe('when a lock refuses the rename', () => {
+        afterEach(() => {
+            vi.restoreAllMocks()
+        })
+
+        const lockError = () => Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+
+        test('retries until the lock clears', () => {
+            const target = path.join(workingDir, 'locked-then-free.css')
+            const renameSync = fs.renameSync
+            const rename = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+                throw lockError()
+            }).mockImplementationOnce(() => {
+                throw lockError()
+            }).mockImplementation(renameSync)
+
+            writeFileAtomicSync(target, 'written under a lock')
+
+            expect(rename).toHaveBeenCalledTimes(3)
+            expect(fs.readFileSync(target, 'utf-8')).toBe('written under a lock')
+            expect(fs.readdirSync(workingDir).filter(entry => entry.endsWith('.tmp'))).toEqual([])
+        })
+
+        test('gives up and cleans up when the lock never clears', () => {
+            const target = path.join(workingDir, 'locked-forever.css')
+            const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+                throw lockError()
+            })
+
+            expect(() => writeFileAtomicSync(target, 'never written')).toThrow('EPERM')
+            expect(rename).toHaveBeenCalledTimes(6)
+            expect(fs.existsSync(target)).toBe(false)
+            expect(fs.readdirSync(workingDir).filter(entry => entry.endsWith('.tmp'))).toEqual([])
+        })
+
+        test('does not retry an error that is not a lock', () => {
+            const target = path.join(workingDir, 'broken.css')
+            const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+                throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+            })
+
+            expect(() => writeFileAtomicSync(target, 'never written')).toThrow('ENOSPC')
+            expect(rename).toHaveBeenCalledTimes(1)
+            expect(fs.readdirSync(workingDir).filter(entry => entry.endsWith('.tmp'))).toEqual([])
+        })
+    })
 })
 
 describe('buildCSS', () => {
@@ -180,4 +228,37 @@ describe('buildCSS', () => {
         expect(fs.statSync(cssFilePath).ino).toBe(inode)
         expect(fs.readFileSync(cssFilePath, 'utf-8')).toBe(expected)
     }, 60_000)
+})
+
+describe('buildDtsFile', () => {
+    let workingDir = ''
+
+    beforeAll(() => {
+        workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'uniwind-dts-'))
+    })
+
+    afterAll(() => {
+        fs.rmSync(workingDir, { recursive: true, force: true })
+    })
+
+    test('writes the declaration file once and leaves it alone while it is up to date', () => {
+        const dtsPath = path.join(workingDir, 'uniwind-types.d.ts')
+
+        buildDtsFile(dtsPath, '[\'light\', \'dark\']')
+
+        const content = fs.readFileSync(dtsPath, 'utf-8')
+
+        expect(content).toContain('themes: readonly [\'light\', \'dark\']')
+
+        const inode = fs.statSync(dtsPath).ino
+
+        buildDtsFile(dtsPath, '[\'light\', \'dark\']')
+
+        expect(fs.statSync(dtsPath).ino).toBe(inode)
+
+        buildDtsFile(dtsPath, '[\'light\', \'dark\', \'sepia\']')
+
+        expect(fs.statSync(dtsPath).ino).not.toBe(inode)
+        expect(fs.readFileSync(dtsPath, 'utf-8')).toContain('themes: readonly [\'light\', \'dark\', \'sepia\']')
+    })
 })
